@@ -177,7 +177,7 @@ class CrescentModel(nn.Module):
         return self.network(x)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers [Saving and Loading] ───────────────────────────────────────────────────────────────────
 
 def save_checkpoint(
     model: nn.Module,
