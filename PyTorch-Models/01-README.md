@@ -13,6 +13,7 @@ A series of neural network projects built while learning PyTorch from the ground
 | 03  | Multiclass Classification | Classification | `CrossEntropyLoss`, softmax, blob data               |
 | 04  | Spiral Classification     | Classification | Dropout, checkpointing, resume training              |
 | 05  | XOR Grid Classification   | Classification | Custom dataset, deep MLP, LR scheduling, checkpoints |
+| 06  | Crescent Classification   | Classification | `make_moons`, 20-class custom generator, timer       |
 
 ---
 
@@ -30,8 +31,11 @@ pytorch-learning/
 │   └── multiclass_classification_model.py
 ├── 04_spiral_classification/
 │   └── first_model.py
-└── 05_xor_grid_classification/
-    ├── xor_classification.py
+├── 05_xor_grid_classification/
+│   ├── xor_classification.py
+│   └── helper_function.py
+└── 06_crescent_classification/
+    ├── crescent_classification.py
     └── helper_function.py
 ```
 
@@ -180,12 +184,12 @@ Builds on everything from project 04 — dropout, LR scheduling, and checkpoint 
 **Classes:** 9 | **Features:** 2
 
 ```
-Input (2) → Linear(2 → 64)  → ReLU
-          → Linear(64 → 256) → ReLU → Dropout(0.2)
+Input (2) → Linear(2 → 64)   → ReLU
+          → Linear(64 → 256)  → ReLU → Dropout(0.2)
           → Linear(256 → 256) → ReLU → Dropout(0.2)  ×3
           → Linear(256 → 64)  → ReLU → Dropout(0.2)
-          → Linear(64 → 64)  → ReLU
-          → Linear(64 → 9)   → Logits
+          → Linear(64 → 64)   → ReLU
+          → Linear(64 → 9)    → Logits
 ```
 
 **What it covers:**
@@ -210,6 +214,52 @@ On first run the model trains for 1,000 epochs and saves a checkpoint. On every 
 
 ---
 
+## 06 — Crescent Multiclass Classification
+
+**File:** `06_crescent_classification/crescent_classification.py`
+
+Extends the half-moon idea from scikit-learn's `make_moons` into a 20-class multiclass problem. A custom generator stacks 10 crescent pairs along the x-axis, remaps their local {0, 1} labels to global class ids, centres the dataset at the origin, and shuffles before returning. Each pair gets its own random seed so no two crescents share identical geometry.
+
+Builds on everything from project 05 — dropout, LR scheduling, and checkpoint resuming — and introduces a wall-clock training timer that prints live elapsed time and ETA at every log step, plus a per-iteration summary on completion.
+
+**Model:** 6 linear layers with ReLU + Dropout(0.2)  
+**Loss:** CrossEntropyLoss  
+**Optimizer:** Adam with `ReduceLROnPlateau` scheduler  
+**Epochs:** 1,000 per session (resumes indefinitely)  
+**Classes:** 20 | **Features:** 2
+
+```
+Input (2) → Linear(2 → 64)   → ReLU
+          → Linear(64 → 256)  → ReLU → Dropout(0.2)
+          → Linear(256 → 256) → ReLU → Dropout(0.2)
+          → Linear(256 → 256) → ReLU → Dropout(0.2)
+          → Linear(256 → 64)  → ReLU
+          → Linear(64 → 20)   → Logits
+```
+
+**What it covers:**
+
+- Extending `make_moons` into an arbitrary-class crescent generator
+- Pair-wise x-axis layout with global label remapping
+- Odd-class guard — cleanly handles any `n_crescents` value including odd numbers
+- Wall-clock timer using `time.perf_counter` — live elapsed + ETA per log step
+- Per-iteration summary: total train time, time per epoch, full iteration time
+- Full checkpoint system — saves model weights, optimiser state, epoch, and loss
+- Resuming training seamlessly across multiple sessions
+- Side-by-side decision boundary plots (ground truth vs predictions)
+
+**How to run:**
+
+```bash
+python 06_crescent_classification/crescent_classification.py
+```
+
+On first run the model trains for 1,000 epochs and saves a checkpoint. On every subsequent run it resumes automatically from where it left off. After each session it will ask `Train for another 1 000 epochs? (y/n)` — enter `y` to continue or `n` to stop.
+
+**Checkpoint location:** `06_crescent_classification/Crescents_model/Crescents_model.pth`
+
+---
+
 ## What I learned across this series
 
 - How neural networks learn through gradient descent and backpropagation
@@ -220,3 +270,5 @@ On first run the model trains for 1,000 epochs and saves a checkpoint. On every 
 - How to save, load, and resume model training with checkpoints
 - How to design and generate custom datasets for non-standard problems
 - How deeper networks handle more complex, non-convex decision boundaries
+- How to extend a two-class sklearn generator into an arbitrary multiclass dataset
+- How to measure and log training time with live ETA estimates
