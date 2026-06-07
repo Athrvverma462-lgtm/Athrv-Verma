@@ -97,7 +97,7 @@ Open a terminal in the project folder and run:
 python Dataset_training.py
 ```
 
-Run the script 15 times total for full generalisation. Each run trains every dataset for up to 1000 epochs and saves a checkpoint. Datasets that have already hit their `max_epochs` ceiling are processed in ~0 seconds and skipped automatically.
+The `checkpoints/` folder is not included in the repo. Run the script for full generalisation. Each run trains every dataset for up to 1000 epochs and saves a checkpoint. Datasets that have already hit their `max_epochs` ceiling are processed in ~0 seconds and skipped automatically.
 
 You will see output like:
 
@@ -116,10 +116,6 @@ RUN_SEED = 47291  (train/test split and generator noise vary each launch)
 A small `fresh_eval` gap (under 3–4%) means the model has genuinely generalised.
 
 ---
-
-## Serving the Visualiser
-
-Once at least one dataset is trained:
 
 ```bash
 python server.py
