@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FourierMLP · Pattern Classifier</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0c0c10;
+        --surf: #13131a;
+        --surf2: #1b1b24;
+        --border: rgba(255, 255, 255, 0.08);
+        --border2: rgba(255, 255, 255, 0.14);
+        --accent: #7c6af7;
+        --accent2: #3ecfbf;
+        --text: #dde0ec;
+        --muted: #686880;
+        --danger: #f0607a;
+        --mono: "IBM Plex Mono", monospace;
+        --sans: "IBM Plex Sans", sans-serif;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body {
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+      }
+      body {
+        display: grid;
+        grid-template-rows: 52px 1fr;
+        overflow: hidden;
+      }
+
+      /* ── header ── */
+      header {
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        padding: 0 1.5rem;
+        gap: 0.9rem;
+        flex-shrink: 0;
+      }
+      .h-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      header h1 {
+        font-family: var(--mono);
+        font-size: 0.82rem;
+        font-weight: 400;
+        letter-spacing: 0.06em;
+        color: var(--accent);
+      }
+      header p {
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+      .h-sep {
+        flex: 1;
+      }
+      #globalStatus {
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        padding: 0.2rem 0.7rem;
+        border-radius: 20px;
+        border: 1px solid var(--border2);
+        color: var(--muted);
+        transition:
+          color 0.2s,
+          border-color 0.2s;
+      }
+      #globalStatus.ok {
+        color: var(--accent2);
+        border-color: var(--accent2);
+      }
+      #globalStatus.err {
+        color: var(--danger);
+        border-color: var(--danger);
+      }
+      #globalStatus.busy {
+        color: var(--accent);
+        border-color: var(--accent);
+      }
+
+      /* ── main grid ── */
+      main {
+        height: 100%;
+        display: grid;
+        grid-template-columns: 290px 1fr;
+        overflow: hidden;
+      }
+
+      /* ── sidebar ── */
+      aside {
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        padding: 1.1rem;
+        gap: 1.1rem;
+      }
+      .sec-label {
+        font-family: var(--mono);
+        font-size: 0.63rem;
+        letter-spacing: 0.14em;
+        color: var(--muted);
+        text-transform: uppercase;
+        margin-bottom: 0.45rem;
+      }
+
+      /* pattern grid */
+      .pattern-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+      }
+      .pat-btn {
+        background: var(--surf2);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.62rem;
+        padding: 0.4rem 0.35rem;
+        cursor: pointer;
+        text-align: left;
+        line-height: 1.35;
+        transition:
+          background 0.12s,
+          border-color 0.12s,
+          color 0.12s;
+      }
+      .pat-btn:hover {
+        background: var(--surf);
+        border-color: var(--border2);
+        color: var(--text);
+      }
+      .pat-btn.active {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: rgba(124, 106, 247, 0.1);
+      }
+      .pat-btn.ready::after {
+        content: "";
+        display: inline-block;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--accent2);
+        margin-left: 4px;
+        vertical-align: middle;
+      }
+
+      /* model info */
+      .info-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+      }
+      .info-cell {
+        background: var(--surf2);
+        border-radius: 5px;
+        padding: 0.4rem 0.55rem;
+      }
+      .info-cell .ik {
+        font-size: 0.6rem;
+        color: var(--muted);
+        font-family: var(--mono);
+      }
+      .info-cell .iv {
+        font-size: 0.82rem;
+        font-family: var(--mono);
+        color: var(--accent2);
+        font-weight: 500;
+      }
+
+      /* controls */
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+      }
+      .field label {
+        font-size: 0.74rem;
+        color: var(--muted);
+      }
+      .range-row {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+      }
+      .range-row span {
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        color: var(--accent2);
+        min-width: 3.5rem;
+        text-align: right;
+      }
+      input[type="range"] {
+        flex: 1;
+        accent-color: var(--accent);
+        cursor: pointer;
+        height: 22px;
+      }
+      select {
+        width: 100%;
+        background: var(--surf2);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        color: var(--text);
+        padding: 0.38rem 0.55rem;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        cursor: pointer;
+      }
+      select:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .divider {
+        height: 1px;
+        background: var(--border);
+        margin: 0;
+      }
+
+      /* buttons */
+      .btn {
+        width: 100%;
+        padding: 0.55rem;
+        border-radius: 6px;
+        border: none;
+        cursor: pointer;
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        letter-spacing: 0.04em;
+        transition:
+          opacity 0.15s,
+          transform 0.1s;
+      }
+      .btn:active {
+        transform: scale(0.98);
+      }
+      .btn:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+      }
+      .btn.primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .btn.secondary {
+        background: var(--surf2);
+        border: 1px solid var(--border2);
+        color: var(--text);
+      }
+      .btn.apply {
+        background: rgba(62, 207, 191, 0.12);
+        border: 1px solid var(--accent2);
+        color: var(--accent2);
+      }
+
+      /* ── canvas area ── */
+      .canvas-wrap {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-shrink: 0;
+        padding: 0 1.25rem;
+        height: 38px;
+        border-bottom: 1px solid var(--border);
+      }
+      .toolbar .coord {
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        color: var(--muted);
+        min-width: 18rem;
+      }
+      .toolbar .pred {
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        margin-left: auto;
+        transition: color 0.1s;
+      }
+
+      .canvas-container {
+        overflow: hidden;
+        min-height: 0;
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.25rem;
+        position: relative;
+      }
+      canvas {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        cursor: crosshair;
+        display: block;
+        max-width: 100%;
+        max-height: 100%;
+      }
+
+      /* loading overlay */
+      #loadingOverlay {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(12, 12, 16, 0.72);
+        border-radius: 10px;
+        flex-direction: column;
+        gap: 0.7rem;
+        pointer-events: none;
+      }
+      #loadingOverlay.show {
+        display: flex;
+      }
+      #loadingOverlay p {
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        color: var(--accent);
+      }
+      .spinner {
+        width: 26px;
+        height: 26px;
+        border: 2px solid var(--border2);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* legend */
+      .legend {
+        position: absolute;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        background: rgba(19, 19, 26, 0.93);
+        border: 1px solid var(--border2);
+        border-radius: 7px;
+        padding: 0.55rem 0.8rem;
+        display: none;
+        flex-direction: column;
+        gap: 0.28rem;
+        max-height: 240px;
+        overflow-y: auto;
+      }
+      .legend.show {
+        display: flex;
+      }
+      .leg-item {
+        display: flex;
+        align-items: center;
+        gap: 0.42rem;
+        font-size: 0.66rem;
+        font-family: var(--mono);
+        color: var(--muted);
+      }
+      .leg-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      /* empty state */
+      #emptyMsg {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 0.5rem;
+        pointer-events: none;
+      }
+      #emptyMsg p {
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        color: var(--muted);
+        text-align: center;
+        line-height: 1.7;
+      }
+
+      /* toast */
+      #toast {
+        position: fixed;
+        bottom: 1.25rem;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--surf2);
+        border: 1px solid var(--border2);
+        border-radius: 7px;
+        padding: 0.42rem 1rem;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        color: var(--text);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.18s;
+        z-index: 999;
+      }
+      #toast.show {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="h-dot"></div>
+      <h1>FourierMLP · 2D Pattern Classifier</h1>
+      <p>server-backed inference · loads weights from checkpoint directly</p>
+      <div class="h-sep"></div>
+      <span id="globalStatus">idle</span>
+    </header>
+
+    <main>
+      <aside>
+        <!-- 01 Pattern -->
+        <div>
+          <p class="sec-label">01 · select pattern</p>
+          <div class="pattern-grid" id="patternGrid">
+            <p
+              style="
+                color: var(--muted);
+                font-size: 0.72rem;
+                font-family: var(--mono);
+                grid-column: 1/-1;
+              "
+            >
+              connecting…
+            </p>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- 02 Dataset params -->
+        <div>
+          <p class="sec-label">02 · dataset parameters</p>
+
+          <div class="field">
+            <label>number of points</label>
+            <div class="range-row">
+              <input
+                type="range"
+                id="nSamplesSlider"
+                min="500"
+                max="10000"
+                value="1500"
+                step="100"
+              />
+              <span id="nSamplesVal">1,500</span>
+            </div>
+          </div>
+
+          <div class="field" style="margin-top: 0.6rem">
+            <label>noise level</label>
+            <select id="noiseSelect">
+              <option value="low">low — clean boundaries</option>
+              <option value="medium" selected>medium — realistic</option>
+              <option value="high">high — heavily overlapping</option>
+            </select>
+          </div>
+
+          <button
+            class="btn apply"
+            id="applyParams"
+            style="margin-top: 0.7rem"
+            disabled
+          >
+            apply &amp; re-render
+          </button>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- 03 Model info -->
+        <div id="modelInfo" style="display: none">
+          <p class="sec-label">03 · loaded model</p>
+          <div class="info-grid">
+            <div class="info-cell">
+              <div class="ik">dataset</div>
+              <div class="iv" id="iDataset">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ik">classes</div>
+              <div class="iv" id="iClasses">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ik">hidden dim</div>
+              <div class="iv" id="iHidden">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ik">epoch</div>
+              <div class="iv" id="iEpoch">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ik">train loss</div>
+              <div class="iv" id="iLoss">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ik">freq scale</div>
+              <div class="iv" id="iScale">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ik">best acc</div>
+              <div class="iv" id="iBestAcc">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ik">fresh acc</div>
+              <div class="iv" id="iFreshAcc">—</div>
+            </div>
+            <div class="info-cell" style="grid-column: 1/-1">
+              <div class="ik">complexity</div>
+              <div class="iv" id="iComplexity">—</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- 04 Render -->
+        <div>
+          <p class="sec-label">04 · visualisation</p>
+          <div class="field">
+            <label>grid resolution</label>
+            <div class="range-row">
+              <input
+                type="range"
+                id="resSlider"
+                min="60"
+                max="260"
+                value="120"
+                step="10"
+              />
+              <span id="resVal">120</span>
+            </div>
+          </div>
+          <div class="field" style="margin-top: 0.6rem">
+            <label>point opacity</label>
+            <div class="range-row">
+              <input
+                type="range"
+                id="alphaSlider"
+                min="15"
+                max="100"
+                value="65"
+                step="5"
+              />
+              <span id="alphaVal">65%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 05 Actions -->
+        <div style="display: flex; flex-direction: column; gap: 0.45rem">
+          <p class="sec-label">05 · actions</p>
+          <button class="btn primary" id="runBtn" disabled>
+            render boundary
+          </button>
+          <button class="btn secondary" id="dataBtn" disabled>
+            overlay dataset points
+          </button>
+        </div>
+      </aside>
+
+      <!-- Canvas -->
+      <div class="canvas-wrap">
+        <div class="toolbar">
+          <span class="coord" id="coordDisplay">select a pattern to begin</span>
+          <span class="pred" id="predDisplay"></span>
+        </div>
+        <div class="canvas-container">
+          <canvas id="plotCanvas" width="600" height="600"></canvas>
+          <div id="loadingOverlay">
+            <div class="spinner"></div>
+            <p id="loadingMsg">loading…</p>
+          </div>
+          <div class="legend" id="legend"></div>
+          <div id="emptyMsg">
+            <p>
+              ← pick a pattern from the sidebar<br />weights load automatically
+              from server
+            </p>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div id="toast"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
