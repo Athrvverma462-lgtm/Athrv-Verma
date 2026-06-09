@@ -771,6 +771,40 @@ _COMPLEXITY_PROFILES: dict[str, tuple[int,int,int,int,int]] = {
 _LOW_MAX    = 3.5
 _MEDIUM_MAX = 6.5
 
+# ── Per-dataset render extents ────────────────────────────────────────────────
+# Half-width of the square canvas in world coordinates.
+# Computed from each generator's actual data range (scale + noise*3) × 1.10.
+# Keeps the canvas tight around where training data exists so the model is
+# not asked to classify regions far outside its training distribution.
+RENDER_EXTENTS: dict[str, float] = {
+    "TwoSpirals":              6.66,
+    "Circles":                 1.49,
+    "TwoMoons":                2.34,
+    "XOR":                     3.63,
+    "SineBoundary":            6.00,
+    "ConcentricRings_6":       6.89,
+    "AngularWedges_6":         5.76,
+    "GaussianBlobs_6":         5.50,
+    "MultiArmSpiral_6":        9.00,
+    "GridGaussians_6":         3.82,
+    "ConcentricRings_10":     11.51,
+    "AngularWedges_10":        5.76,
+    "GaussianBlobs_10":        7.50,
+    "MultiArmSpiral_10":       9.00,
+    "GridGaussians_10":        5.08,
+    "ConcentricRings_14":     16.13,
+    "AngularWedges_14":        5.76,
+    "GaussianBlobs_14":       10.00,
+    "MultiArmSpiral_14":       9.00,
+    "GridGaussians_14":        5.08,
+    "ConcentricRings_20":     23.06,
+    "AngularWedges_20":        5.76,
+    "GaussianBlobs_20":       13.00,
+    "MultiArmSpiral_20":       9.00,
+    "GridGaussians_20":        6.35,
+}
+
+
 def get_complexity(dataset_name: str) -> dict:
     """
     Return complexity axes, composite score, and bucket for *dataset_name*.
@@ -893,6 +927,8 @@ def get_hparams(dataset_name: str, num_classes: int) -> dict:
     # ── max epochs ────────────────────────────────────────────────────────────
     max_epochs = {"LOW": 2000, "MEDIUM": 3000, "HIGH": 4000}[bucket]
 
+    render_extent = RENDER_EXTENTS.get(dataset_name, 6.0)
+
     return dict(
         hidden_dim            = hidden_dim,
         mapping_size          = mapping_size,
@@ -907,6 +943,7 @@ def get_hparams(dataset_name: str, num_classes: int) -> dict:
         complexity_bucket     = bucket,
         separability          = sep,
         capacity_factor       = round(cap_factor, 2),
+        render_extent         = render_extent,
     )
 
 
@@ -1069,6 +1106,7 @@ def main():
                     "score":  hp["complexity_score"],
                     "bucket": hp["complexity_bucket"],
                 },
+                "render_extent": hp["render_extent"],
             }
             save_unified_registry(master_registry, master_ckpt_path)
 

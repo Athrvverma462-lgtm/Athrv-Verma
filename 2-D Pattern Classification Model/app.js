@@ -245,6 +245,7 @@ function compileModel(m) {
     mean1: m.X_mean[1],
     std0: m.X_std[0],
     std1: m.X_std[1],
+    render_extent: m.render_extent || 6.0,
     num_classes: m.num_classes,
   };
 }
@@ -397,13 +398,16 @@ function inferOne(wx, wy) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function dataRange() {
+  // Use per-dataset render_extent instead of ±3.5σ heuristic.
+  // This keeps the canvas inside the actual training data region so
+  // the model is never asked to classify far-OOD points.
+  const ext = compiled.render_extent;
   const [m0, m1] = model.X_mean;
-  const [s0, s1] = model.X_std;
   return {
-    xMin: m0 - 3.5 * s0,
-    xMax: m0 + 3.5 * s0,
-    yMin: m1 - 3.5 * s1,
-    yMax: m1 + 3.5 * s1,
+    xMin: m0 - ext,
+    xMax: m0 + ext,
+    yMin: m1 - ext,
+    yMax: m1 + ext,
   };
 }
 

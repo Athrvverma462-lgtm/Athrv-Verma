@@ -263,6 +263,7 @@ def get_weights_payload(name: str) -> dict:
         "fresh_acc":         fresh_acc,
         "complexity_score":  float(cx.get("score",  0.0)),
         "complexity_bucket": str(cx.get("bucket", "—")),
+        "render_extent":     float(entry.get("render_extent", 6.0)),
         "X_mean":            tl(entry["X_mean"]),
         "X_std":             tl(entry["X_std"]),
         "layers": [
