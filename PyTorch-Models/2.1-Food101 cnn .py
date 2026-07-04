@@ -388,12 +388,12 @@ def main():
     # ── Datasets ──────────────────────────────────────────────────────────────
     print("Loading Food101 train split…")
     train_dataset = datasets.Food101(
-        root="data", split="train", download=False, transform=train_transforms
+        root="data", split="train", download=True, transform=train_transforms
     )
 
     print("Loading Food101 test split…")
     test_dataset = datasets.Food101(
-        root="data", split="test", download=False, transform=test_transforms
+        root="data", split="test", download=True, transform=test_transforms
     )
 
     # ── DataLoaders ───────────────────────────────────────────────────────────
