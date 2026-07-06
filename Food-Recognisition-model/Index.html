@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Food101 — Dish Scanner</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">◎</span>
+        <span class="brand-name"
+          >DISH<span class="brand-name-thin">SCANNER</span></span
+        >
+      </div>
+      <div id="globalStatus" class="status busy">connecting…</div>
+    </header>
+
+    <main class="layout">
+      <!-- ── Scan panel ─────────────────────────────────────────────── -->
+      <section class="panel scan-panel">
+        <div class="panel-label">01 — sample</div>
+
+        <div id="dropzone" class="dropzone">
+          <div id="viewfinder" class="viewfinder">
+            <span class="corner tl"></span>
+            <span class="corner tr"></span>
+            <span class="corner bl"></span>
+            <span class="corner br"></span>
+            <img id="preview" class="preview-img" alt="" />
+            <div id="placeholder" class="placeholder">
+              <div class="placeholder-icon">＋</div>
+              <p>Drop a photo, click to browse,<br />or paste from clipboard</p>
+            </div>
+            <div id="scanLine" class="scan-line"></div>
+          </div>
+        </div>
+
+        <input type="file" id="fileInput" accept="image/*" hidden />
+
+        <div class="scan-controls">
+          <button id="browseBtn" class="btn btn-ghost">choose photo</button>
+          <button id="scanBtn" class="btn btn-primary" disabled>
+            identify dish
+          </button>
+        </div>
+        <p class="hint">
+          Any image format works — jpg, png, webp, heic-exported, whatever your
+          camera gives you.
+        </p>
+      </section>
+
+      <!-- ── Results panel ──────────────────────────────────────────── -->
+      <section class="panel result-panel">
+        <div class="panel-label">02 — reading</div>
+
+        <div id="emptyResult" class="empty-result">
+          <p>No sample scanned yet.</p>
+        </div>
+
+        <div id="resultBody" class="result-body" style="display: none">
+          <div class="result-head">
+            <div class="result-eyebrow">best match</div>
+            <h1 id="predLabel" class="pred-label">—</h1>
+            <div class="confidence-row">
+              <div class="confidence-track">
+                <div id="confidenceFill" class="confidence-fill"></div>
+              </div>
+              <span id="confidenceVal" class="confidence-val">0%</span>
+            </div>
+          </div>
+
+          <div class="ticket">
+            <div class="ticket-title">top 5 candidates</div>
+            <div id="top5List" class="top5-list"></div>
+          </div>
+
+          <div class="meta-row">
+            <div class="meta-item">
+              <span id="metaEpoch">–</span><label>epoch</label>
+            </div>
+            <div class="meta-item">
+              <span id="metaParams">–</span><label>params</label>
+            </div>
+            <div class="meta-item">
+              <span id="metaClasses">–</span><label>classes</label>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
