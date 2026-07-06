@@ -378,7 +378,7 @@ def main():
     test_transforms = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
-        transforms.TrivialAugmentWide(num_maginude_bins=25),  # add data augmentation to the data so model doesn't memorize it
+        transforms.TrivialAugmentWide(num_magnitude_bins=25),  # add data augmentation to the data so model doesn't memorize it
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
