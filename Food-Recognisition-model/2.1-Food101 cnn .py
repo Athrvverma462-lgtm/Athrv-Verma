@@ -49,8 +49,10 @@ EPOCHS_PER_RUN : int  = 1        # Epochs trained per script execution (resume-f
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Checkpoint directory and file — created automatically on first save
-CHECKPOINT_DIR  = Path("Food101_CNN")
-CHECKPOINT_PATH = CHECKPOINT_DIR / "food101_cnn.pth"
+CHECKPOINT_DIR    = Path("Food101_CNN")
+CHECKPOINT_PATH   = CHECKPOINT_DIR / "food101_cnn.pth"
+CHECKPOINT_TMP    = CHECKPOINT_DIR / "food101_cnn.pth.tmp"   # atomic-write staging file
+CHECKPOINT_BACKUP = CHECKPOINT_DIR / "food101_cnn.pth.bak"   # previous good checkpoint
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -175,54 +177,91 @@ class HighCapacityFood101CNN(nn.Module):
 def save_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
     epoch: int,
     loss: float,
 ) -> None:
     """
-    Saves model weights, optimizer state, and epoch count to CHECKPOINT_PATH.
-    Creates CHECKPOINT_DIR if it does not yet exist.
+    Saves model weights, optimizer state, scheduler state, and epoch count.
+
+    Write safety
+    ------------
+    Writes to a temp file first, then atomically renames it over
+    CHECKPOINT_PATH (Path.replace is atomic on POSIX/Windows same-volume
+    renames). This means a crash, OOM kill, or Ctrl+C mid-save can never
+    leave CHECKPOINT_PATH itself truncated/corrupted — it's either the old
+    file or the fully-written new one, never a partial write.
+
+    Before overwriting, the current CHECKPOINT_PATH (if any) is copied to
+    CHECKPOINT_BACKUP, so there's always one rollback point available even
+    if a *logically* bad checkpoint (e.g. loss spike) gets saved.
     """
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+
     torch.save(
         {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "loss": float(loss) if loss is not None else 0.0,
         },
-        CHECKPOINT_PATH,
+        CHECKPOINT_TMP,
     )
+
+    if CHECKPOINT_PATH.exists():
+        CHECKPOINT_PATH.replace(CHECKPOINT_BACKUP)   # rotate previous good checkpoint → .bak
+
+    CHECKPOINT_TMP.replace(CHECKPOINT_PATH)          # atomic promote
+
     print(f"  ✓ Checkpoint saved — epoch {epoch}.")
+
+
+def _load_ckpt_file(path: Path) -> dict:
+    """Raw torch.load wrapper — raises on missing/corrupt/incompatible file."""
+    return torch.load(path, map_location=DEVICE, weights_only=False)
 
 
 def load_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
-) -> tuple[nn.Module, torch.optim.Optimizer, int]:
+    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
+) -> tuple[nn.Module, torch.optim.Optimizer, torch.optim.lr_scheduler.ReduceLROnPlateau, int]:
     """
-    Loads a checkpoint from CHECKPOINT_PATH into model and optimizer.
+    Loads a checkpoint into model, optimizer, and scheduler.
+
+    Tries CHECKPOINT_PATH first. If that's missing or fails to load (e.g.
+    corrupted by an interrupted write on an older version of this script, or
+    an incompatible architecture change), falls back to CHECKPOINT_BACKUP —
+    the previous good checkpoint — before giving up and starting from scratch.
 
     Returns
     -------
-    model, optimizer, start_epoch
-        start_epoch is 0 when no checkpoint exists or the file is incompatible
-        (e.g. after an architecture change).
+    model, optimizer, scheduler, start_epoch
+        start_epoch is 0 when no usable checkpoint exists.
     """
-    if not CHECKPOINT_PATH.exists():
-        print("  No checkpoint found — starting from scratch.")
-        return model, optimizer, 0
+    for label, path in (("checkpoint", CHECKPOINT_PATH), ("backup checkpoint", CHECKPOINT_BACKUP)):
+        if not path.exists():
+            continue
+        try:
+            ckpt = _load_ckpt_file(path)
+            model.load_state_dict(ckpt["model_state_dict"])
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            if "scheduler_state_dict" in ckpt:
+                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+            else:
+                print("  ⚠  No scheduler state in this checkpoint (older format) — "
+                      "scheduler starting fresh.")
+            start_epoch = ckpt["epoch"]
+            tag = "" if label == "checkpoint" else "  (recovered from backup — main file was unusable)"
+            print(f"  ✓ Loaded {label} — resuming from epoch {start_epoch} "
+                  f"(loss: {float(ckpt['loss']):.5f}).{tag}")
+            return model, optimizer, scheduler, start_epoch
+        except (RuntimeError, ValueError, KeyError, EOFError) as e:
+            print(f"  ⚠  {label.capitalize()} incompatible or corrupted — ({e})")
 
-    try:
-        ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
-        model.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        start_epoch = ckpt["epoch"]
-        print(f"  ✓ Checkpoint loaded — resuming from epoch {start_epoch} "
-              f"(loss: {float(ckpt['loss']):.5f}).")
-        return model, optimizer, start_epoch
-    except (RuntimeError, ValueError, KeyError) as e:
-        print(f"  ⚠  Checkpoint incompatible or corrupted — starting fresh. ({e})")
-        return model, optimizer, 0
+    print("  No usable checkpoint found — starting from scratch.")
+    return model, optimizer, scheduler, 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -267,6 +306,7 @@ def eval_model(
 def train_model(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
     train_dataloader: DataLoader,
     test_dataloader: DataLoader,
     start_epoch: int,
@@ -281,13 +321,13 @@ def train_model(
     ReduceLROnPlateau monitors test loss each epoch. If it does not improve
     for 3 consecutive epochs the lr is halved (factor=0.5). This gives the
     model a second wind when it plateaus rather than manually tuning lr.
-    """
-    loss_fn   = nn.CrossEntropyLoss()
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=3, factor=0.5
-    )
 
-    torch.manual_seed(RANDOM_SEED)
+    `scheduler` is created once in main() and passed in (rather than
+    recreated here every call) so its patience/best-loss counters persist
+    across iterations and across resumed runs via load_checkpoint.
+    """
+    loss_fn = nn.CrossEntropyLoss()
+
     current_loss  = None
     loop_start    = time.perf_counter()
 
@@ -424,6 +464,14 @@ def main():
         model.parameters(), lr=3e-4, weight_decay=1e-2
     )
 
+    # Created once here (not inside train_model) so patience/best-loss state
+    # persists across iterations and across resumed script runs.
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, patience=3, factor=0.5
+    )
+
+    torch.manual_seed(RANDOM_SEED)  # seed once, before the resumable loop — not per-iteration
+
     print(f"\nDevice : {DEVICE}")
     print(f"Classes: {len(train_dataset.classes)}")
     total_params = sum(p.numel() for p in model.parameters())
@@ -433,7 +481,7 @@ def main():
     iteration = 0
     while True:
         iteration += 1
-        model, optimizer, start_epoch = load_checkpoint(model, optimizer)
+        model, optimizer, scheduler, start_epoch = load_checkpoint(model, optimizer, scheduler)
         target_epoch = start_epoch + EPOCHS_PER_RUN
 
         print(f"\n{'═'*55}")
@@ -445,6 +493,7 @@ def main():
         final_loss, train_time = train_model(
             model            = model,
             optimizer        = optimizer,
+            scheduler        = scheduler,
             train_dataloader = train_dataloader,
             test_dataloader  = test_dataloader,
             start_epoch      = start_epoch,
@@ -459,7 +508,7 @@ def main():
             f"Total: {iter_total:.1f}s"
         )
 
-        save_checkpoint(model, optimizer, epoch=target_epoch, loss=final_loss)
+        save_checkpoint(model, optimizer, scheduler, epoch=target_epoch, loss=final_loss)
 
         # Full evaluation pass on the test set
         torch.manual_seed(RANDOM_SEED)

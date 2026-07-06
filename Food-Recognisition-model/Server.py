@@ -15,8 +15,13 @@ real benefit, so the split here is:
                            rendering the response. No model math in JS.
 
 Checkpoint (written by 2_1-Food101_cnn_.py):
-    <this_file's_dir>/Food101_CNN/food101_cnn.pth
-    Holds: model_state_dict, optimizer_state_dict, epoch, loss
+    <this_file's_dir>/Food101_CNN/food101_cnn.pth       — current checkpoint
+    <this_file's_dir>/Food101_CNN/food101_cnn.pth.bak   — previous checkpoint (rollback copy)
+    Holds: model_state_dict, optimizer_state_dict, scheduler_state_dict,
+    epoch, loss. This server only needs model_state_dict + epoch/loss for
+    inference, but it will fall back to the .bak file if the primary
+    checkpoint is missing or fails to load — mirroring the training
+    script's own load_checkpoint() recovery behaviour.
     (no class list / normalisation stats saved — reconstructed below to
     exactly match the training script.)
 
@@ -48,9 +53,10 @@ from PIL import Image
 from torchvision import transforms
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-BASE_DIR   = Path(__file__).resolve().parent
-CKPT_PATH  = BASE_DIR / "Food101_CNN" / "food101_cnn.pth"
-PORT       = 8000
+BASE_DIR    = Path(__file__).resolve().parent
+CKPT_PATH   = BASE_DIR / "Food101_CNN" / "food101_cnn.pth"
+CKPT_BACKUP = BASE_DIR / "Food101_CNN" / "food101_cnn.pth.bak"  # written by 2_1-Food101_cnn_.py
+PORT        = 8000
 
 # Sorted alphabetically — this is exactly the order torchvision.datasets.Food101
 # assigns as class indices (`self.classes = sorted(metadata.keys())`), so it
@@ -153,28 +159,55 @@ _ckpt_meta: dict = {}
 
 
 def _get_model() -> nn.Module:
+    """
+    Loads the checkpoint into a fresh model instance (cached in _model after
+    the first call).
+
+    Tries CKPT_PATH first. If it's missing or fails to load — e.g. an
+    interrupted write on an older training-script version, or a corrupted
+    file — falls back to CKPT_BACKUP (the previous good checkpoint written
+    by save_checkpoint()'s rotation step). Only if both are unusable does
+    this raise, so the server behaves the same way load_checkpoint() does
+    in the training script.
+    """
     global _model, _ckpt_meta
     if _model is not None:
         return _model
 
-    if not CKPT_PATH.exists():
-        raise FileNotFoundError(
-            f"Checkpoint not found: {CKPT_PATH}\n"
-            "Train first with:  python 2_1-Food101_cnn_.py"
+    last_error: Exception | None = None
+
+    for label, path in (("checkpoint", CKPT_PATH), ("backup checkpoint", CKPT_BACKUP)):
+        if not path.exists():
+            continue
+        try:
+            model = HighCapacityFood101CNN(input_shape=3, output_shape=101).to(DEVICE)
+            ckpt = torch.load(path, map_location=DEVICE, weights_only=False)
+            model.load_state_dict(ckpt["model_state_dict"])
+            model.eval()
+
+            _ckpt_meta = {
+                "epoch": ckpt.get("epoch", 0),
+                "loss": float(ckpt.get("loss", 0.0)),
+                "total_params": sum(p.numel() for p in model.parameters()),
+                "source": path.name,
+            }
+            _model = model
+            if label == "backup checkpoint":
+                print(f"  ⚠  Primary checkpoint unusable — loaded {path.name} instead.")
+            return _model
+        except (RuntimeError, ValueError, KeyError, EOFError) as e:
+            last_error = e
+            print(f"  ⚠  {label.capitalize()} at {path} incompatible or corrupted — ({e})")
+
+    if last_error is not None:
+        raise RuntimeError(
+            f"Both checkpoint and backup were found but failed to load: {last_error}"
         )
 
-    model = HighCapacityFood101CNN(input_shape=3, output_shape=101).to(DEVICE)
-    ckpt = torch.load(CKPT_PATH, map_location=DEVICE, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.eval()
-
-    _ckpt_meta = {
-        "epoch": ckpt.get("epoch", 0),
-        "loss": float(ckpt.get("loss", 0.0)),
-        "total_params": sum(p.numel() for p in model.parameters()),
-    }
-    _model = model
-    return _model
+    raise FileNotFoundError(
+        f"Checkpoint not found: {CKPT_PATH} (and no backup at {CKPT_BACKUP})\n"
+        "Train first with:  python 2_1-Food101_cnn_.py"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -281,8 +314,9 @@ class Handler(BaseHTTPRequestHandler):
                     "epoch": _ckpt_meta.get("epoch", 0),
                     "total_params": _ckpt_meta.get("total_params", 0),
                     "num_classes": len(CLASS_NAMES),
+                    "checkpoint_source": _ckpt_meta.get("source", ""),
                 })
-            except FileNotFoundError as e:
+            except (FileNotFoundError, RuntimeError) as e:
                 self._send_json(200, {"ready": False, "error": str(e)})
             return
 
@@ -315,6 +349,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
             except FileNotFoundError as e:
                 self._send_json(404, {"error": str(e)})
+            except RuntimeError as e:
+                self._send_json(503, {"error": str(e)})
             except Exception as e:
                 self._send_json(500, {"error": f"inference failed: {e}"})
             return
@@ -330,12 +366,12 @@ if __name__ == "__main__":
     print("\n  Food101 CNN inference server")
     print(f"  Checkpoint : {CKPT_PATH}")
 
-    if not CKPT_PATH.exists():
-        print("\n  ⚠  Checkpoint not found — train first with:  python 2_1-Food101_cnn_.py")
+    if not CKPT_PATH.exists() and not CKPT_BACKUP.exists():
+        print("\n  ⚠  No checkpoint found — train first with:  python 2_1-Food101_cnn_.py")
     else:
         try:
             _get_model()
-            print(f"  ✓  Model loaded on {DEVICE} | "
+            print(f"  ✓  Model loaded from {_ckpt_meta['source']} on {DEVICE} | "
                   f"epoch {_ckpt_meta['epoch']} | "
                   f"{_ckpt_meta['total_params']:,} params | "
                   f"{len(CLASS_NAMES)} classes")
