@@ -55,7 +55,6 @@ from torchvision import transforms
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).resolve().parent
 CKPT_PATH   = BASE_DIR / "Food101_CNN" / "food101_cnn.pth"
-CKPT_BACKUP = BASE_DIR / "Food101_CNN" / "food101_cnn.pth.bak"  # written by 2_1-Food101_cnn_.py
 PORT        = 8000
 
 # Sorted alphabetically — this is exactly the order torchvision.datasets.Food101
@@ -176,7 +175,7 @@ def _get_model() -> nn.Module:
 
     last_error: Exception | None = None
 
-    for label, path in (("checkpoint", CKPT_PATH), ("backup checkpoint", CKPT_BACKUP)):
+    for label, path in (("checkpoint", CKPT_PATH)):
         if not path.exists():
             continue
         try:
@@ -205,7 +204,7 @@ def _get_model() -> nn.Module:
         )
 
     raise FileNotFoundError(
-        f"Checkpoint not found: {CKPT_PATH} (and no backup at {CKPT_BACKUP})\n"
+        f"Checkpoint not found: {CKPT_PATH}\n"
         "Train first with:  python 2_1-Food101_cnn_.py"
     )
 
@@ -366,7 +365,7 @@ if __name__ == "__main__":
     print("\n  Food101 CNN inference server")
     print(f"  Checkpoint : {CKPT_PATH}")
 
-    if not CKPT_PATH.exists() and not CKPT_BACKUP.exists():
+    if not CKPT_PATH.exists():
         print("\n  ⚠  No checkpoint found — train first with:  python 2_1-Food101_cnn_.py")
     else:
         try:
