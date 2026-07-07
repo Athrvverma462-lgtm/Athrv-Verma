@@ -44,7 +44,7 @@ from helper_function import accuracy_fn
 BATCH_SIZE     : int  = 32       # Fits comfortably in ~4 GB VRAM; lower to 16 if OOM
 RANDOM_SEED    : int  = 42       # Controls weight init and dataloader shuffle
 LOG_INTERVAL   : int  = 100      # Print progress every N batches during training
-EPOCHS_PER_RUN : int  = 1        # Epochs trained per script execution (resume-friendly)
+EPOCHS_PER_RUN : int  = 4        # Epochs trained per script execution (resume-friendly)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

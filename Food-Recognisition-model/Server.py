@@ -53,9 +53,10 @@ from PIL import Image
 from torchvision import transforms
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-BASE_DIR    = Path(__file__).resolve().parent
-CKPT_PATH   = BASE_DIR / "Food101_CNN" / "food101_cnn.pth"
-PORT        = 8000
+BASE_DIR          = Path(__file__).resolve().parent
+CHECKPOINT_PATH   = BASE_DIR / "Food101_CNN" / "food101_cnn.pth"
+CHECKPOINT_BACKUP = BASE_DIR / "Food101_CNN" / "food101_cnn.pth.bak"  # written by 2_1-Food101_cnn_.py
+PORT              = 8000
 
 # Sorted alphabetically — this is exactly the order torchvision.datasets.Food101
 # assigns as class indices (`self.classes = sorted(metadata.keys())`), so it
@@ -162,12 +163,12 @@ def _get_model() -> nn.Module:
     Loads the checkpoint into a fresh model instance (cached in _model after
     the first call).
 
-    Tries CKPT_PATH first. If it's missing or fails to load — e.g. an
+    Tries CHECKPOINT_PATH first. If it's missing or fails to load — e.g. an
     interrupted write on an older training-script version, or a corrupted
-    file — falls back to CKPT_BACKUP (the previous good checkpoint written
-    by save_checkpoint()'s rotation step). Only if both are unusable does
-    this raise, so the server behaves the same way load_checkpoint() does
-    in the training script.
+    file — falls back to CHECKPOINT_BACKUP (the previous good checkpoint
+    written by save_checkpoint()'s rotation step). Only if both are unusable
+    does this raise, so the server behaves the same way load_checkpoint()
+    does in the training script.
     """
     global _model, _ckpt_meta
     if _model is not None:
@@ -175,7 +176,7 @@ def _get_model() -> nn.Module:
 
     last_error: Exception | None = None
 
-    for label, path in (("checkpoint", CKPT_PATH)):
+    for label, path in (("checkpoint", CHECKPOINT_PATH), ("backup checkpoint", CHECKPOINT_BACKUP)):
         if not path.exists():
             continue
         try:
@@ -204,7 +205,7 @@ def _get_model() -> nn.Module:
         )
 
     raise FileNotFoundError(
-        f"Checkpoint not found: {CKPT_PATH}\n"
+        f"Checkpoint not found: {CHECKPOINT_PATH} (and no backup at {CHECKPOINT_BACKUP})\n"
         "Train first with:  python 2_1-Food101_cnn_.py"
     )
 
@@ -363,9 +364,9 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print("\n  Food101 CNN inference server")
-    print(f"  Checkpoint : {CKPT_PATH}")
+    print(f"  Checkpoint : {CHECKPOINT_PATH}")
 
-    if not CKPT_PATH.exists():
+    if not CHECKPOINT_PATH.exists() and not CHECKPOINT_BACKUP.exists():
         print("\n  ⚠  No checkpoint found — train first with:  python 2_1-Food101_cnn_.py")
     else:
         try:
