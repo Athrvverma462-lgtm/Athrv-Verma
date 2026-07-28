@@ -3,12 +3,14 @@ use std::io;
 use std::io::Write;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use std::collections::HashMap;
 
 const MANUAL_SEED: u64 = 42;
 
-struct Tensor{
+// Convention: 3D tensors are [batch, seq_len, dim]. 2D tensors are weights [rows, cols] (shared across batch).
+struct Tensor {
     data: Vec<f32>,
-    shape: Vec<usize>
+    shape: Vec<usize>,
 }
 
 impl Tensor {
@@ -32,49 +34,83 @@ impl Tensor {
         format!("[{}]", parts.join(",\n"))
     }
 
-     // 2D indexing helper: converts (row, col) into the flat buffer index
+    // 2D indexing (for weight matrices: shape = [rows, cols])
     fn get(&self, row: usize, col: usize) -> f32 {
         let cols = self.shape[1];
         self.data[row * cols + col]
     }
 
-    fn matmul(&self, other: &Tensor) -> Tensor {
-        // self: [rows_a, cols_a], other: [rows_b, cols_b], require cols_a == rows_b
-        let rows_a = self.shape[0];
-        let cols_a = self.shape[1];
-        let rows_b = other.shape[0];
-        let cols_b = other.shape[1];
-
-        assert_eq!(cols_a, rows_b, "matmul shape mismatch: {:?} vs {:?}", self.shape, other.shape);
-
-        let mut data = vec![0.0; rows_a * cols_b];
-
-        for i in 0..rows_a {
-            for j in 0..cols_b {
-                let mut sum = 0.0;
-                for k in 0..cols_a {
-                    sum += self.get(i, k) * other.get(k, j);
-                }
-                data[i * cols_b + j] = sum;
-            }
-        }
-
-        Tensor { data, shape: vec![rows_a, cols_b] }
+    // 3D indexing (for batched tensors: shape = [batch, rows, cols])
+    fn get3(&self, b: usize, row: usize, col: usize) -> f32 {
+        let rows = self.shape[1];
+        let cols = self.shape[2];
+        self.data[b * rows * cols + row * cols + col]
     }
 
-    fn transpose(&self) -> Tensor {
-        let rows = self.shape[0];
-        let cols = self.shape[1];
-        let mut data = vec![0.0; rows * cols];
+    // batched matmul: self [batch, m, k] · other [batch, k, n] -> [batch, m, n]
+    fn matmul_batched(&self, other: &Tensor) -> Tensor {
+        let batch = self.shape[0];
+        let m = self.shape[1];
+        let k = self.shape[2];
+        let k2 = other.shape[1];
+        let n = other.shape[2];
+        assert_eq!(batch, other.shape[0], "batch size mismatch");
+        assert_eq!(k, k2, "matmul_batched shape mismatch: {:?} vs {:?}", self.shape, other.shape);
 
-        for i in 0..rows {
-            for j in 0..cols {
-                // swap positions: element at (i,j) goes to (j,i) in the new layout
-                data[j * rows + i] = self.get(i, j);
+        let mut data = vec![0.0; batch * m * n];
+        for b in 0..batch {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for kk in 0..k {
+                        sum += self.get3(b, i, kk) * other.get3(b, kk, j);
+                    }
+                    data[b * m * n + i * n + j] = sum;
+                }
             }
         }
+        Tensor { data, shape: vec![batch, m, n] }
+    }
 
-        Tensor { data, shape: vec![cols, rows] } // shape dimensions swapped too
+    // broadcast matmul: self [batch, m, k] · weight [k, n] (2D, shared across batch) -> [batch, m, n]
+    fn matmul_weight(&self, weight: &Tensor) -> Tensor {
+        let batch = self.shape[0];
+        let m = self.shape[1];
+        let k = self.shape[2];
+        let k2 = weight.shape[0];
+        let n = weight.shape[1];
+        assert_eq!(k, k2, "matmul_weight shape mismatch: {:?} vs {:?}", self.shape, weight.shape);
+
+        let mut data = vec![0.0; batch * m * n];
+        for b in 0..batch {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for kk in 0..k {
+                        sum += self.get3(b, i, kk) * weight.get(kk, j);
+                    }
+                    data[b * m * n + i * n + j] = sum;
+                }
+            }
+        }
+        Tensor { data, shape: vec![batch, m, n] }
+    }
+
+    // transpose last two dims, per batch: [batch, rows, cols] -> [batch, cols, rows]
+    fn transpose_last(&self) -> Tensor {
+        let batch = self.shape[0];
+        let rows = self.shape[1];
+        let cols = self.shape[2];
+        let mut data = vec![0.0; batch * rows * cols];
+
+        for b in 0..batch {
+            for i in 0..rows {
+                for j in 0..cols {
+                    data[b * cols * rows + j * rows + i] = self.get3(b, i, j);
+                }
+            }
+        }
+        Tensor { data, shape: vec![batch, cols, rows] }
     }
 
     fn scalar_div(&self, scalar: f32) -> Tensor {
@@ -82,92 +118,90 @@ impl Tensor {
         Tensor { data, shape: self.shape.clone() }
     }
 
+    // softmax over the last dimension, per batch, per row
     fn softmax_rows(&self) -> Tensor {
-        let rows = self.shape[0];
-        let cols = self.shape[1];
-        let mut data = vec![0.0; rows * cols];
+        let batch = self.shape[0];
+        let rows = self.shape[1];
+        let cols = self.shape[2];
+        let mut data = vec![0.0; batch * rows * cols];
 
-        for i in 0..rows {
-            // 1. find the max value in this row (for numerical stability)
-            let mut max_val = f32::NEG_INFINITY;
-            for j in 0..cols {
-                let v = self.get(i, j);
-                if v > max_val {
-                    max_val = v;
+        for b in 0..batch {
+            for i in 0..rows {
+                let mut max_val = f32::NEG_INFINITY;
+                for j in 0..cols {
+                    let v = self.get3(b, i, j);
+                    if v > max_val { max_val = v; }
+                }
+
+                let mut row_exp = vec![0.0; cols];
+                let mut sum = 0.0;
+                for j in 0..cols {
+                    let e = (self.get3(b, i, j) - max_val).exp();
+                    row_exp[j] = e;
+                    sum += e;
+                }
+
+                for j in 0..cols {
+                    data[b * rows * cols + i * cols + j] = row_exp[j] / sum;
                 }
             }
-
-            // 2. exponentiate each element (shifted by max_val to avoid overflow)
-            let mut row_exp = vec![0.0; cols];
-            let mut sum = 0.0;
-            for j in 0..cols {
-                let e = (self.get(i, j) - max_val).exp();
-                row_exp[j] = e;
-                sum += e;
-            }
-
-            // 3. divide each exponentiated value by the row's sum
-            for j in 0..cols {
-                data[i * cols + j] = row_exp[j] / sum;
-            }
         }
-
-        Tensor { data, shape: vec![rows, cols] }
+        Tensor { data, shape: vec![batch, rows, cols] }
     }
 
+    // layer norm over the last dimension, per batch, per row
     fn layer_norm(&self, epsilon: f32) -> Tensor {
-        let rows = self.shape[0];
-        let cols = self.shape[1];
-        let mut data = vec![0.0; rows * cols];
+        let batch = self.shape[0];
+        let rows = self.shape[1];
+        let cols = self.shape[2];
+        let mut data = vec![0.0; batch * rows * cols];
 
-        for i in 0..rows {
-            // 1. compute mean of this row
-            let mut sum = 0.0;
-            for j in 0..cols {
-                sum += self.get(i, j);
-            }
-            let mean = sum / cols as f32;
+        for b in 0..batch {
+            for i in 0..rows {
+                let mut sum = 0.0;
+                for j in 0..cols {
+                    sum += self.get3(b, i, j);
+                }
+                let mean = sum / cols as f32;
 
-            // 2. compute variance of this row
-            let mut var_sum = 0.0;
-            for j in 0..cols {
-                let diff = self.get(i, j) - mean;
-                var_sum += diff * diff;
-            }
-            let variance = var_sum / cols as f32;
+                let mut var_sum = 0.0;
+                for j in 0..cols {
+                    let diff = self.get3(b, i, j) - mean;
+                    var_sum += diff * diff;
+                }
+                let variance = var_sum / cols as f32;
+                let denom = (variance + epsilon).sqrt();
 
-            // 3. normalize: (x - mean) / sqrt(variance + epsilon)
-            let denom = (variance + epsilon).sqrt();
-            for j in 0..cols {
-                data[i * cols + j] = (self.get(i, j) - mean) / denom;
+                for j in 0..cols {
+                    data[b * rows * cols + i * cols + j] = (self.get3(b, i, j) - mean) / denom;
+                }
             }
         }
-
-        Tensor { data, shape: vec![rows, cols] }
+        Tensor { data, shape: vec![batch, rows, cols] }
     }
 
-    // adds a 1D bias vector to every row of a 2D tensor
+    // adds a 1D bias vector to every row, broadcast across batch too
     fn add_bias(&self, bias: &Tensor) -> Tensor {
-        let rows = self.shape[0];
-        let cols = self.shape[1];
+        let batch = self.shape[0];
+        let rows = self.shape[1];
+        let cols = self.shape[2];
         assert_eq!(cols, bias.data.len(), "bias length must match column count");
 
-        let mut data = vec![0.0; rows * cols];
-        for i in 0..rows {
-            for j in 0..cols {
-                data[i * cols + j] = self.get(i, j) + bias.data[j];
+        let mut data = vec![0.0; batch * rows * cols];
+        for b in 0..batch {
+            for i in 0..rows {
+                for j in 0..cols {
+                    data[b * rows * cols + i * cols + j] = self.get3(b, i, j) + bias.data[j];
+                }
             }
         }
-
-        Tensor { data, shape: vec![rows, cols] }
+        Tensor { data, shape: vec![batch, rows, cols] }
     }
 
     fn gelu(&self) -> Tensor {
         let data: Vec<f32> = self.data.iter().map(|&x| {
-            // tanh approximation of GELU (standard, matches PyTorch's default closely)
             0.5 * x * (1.0 + ((2.0 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x.powi(3))).tanh())
         }).collect();
-
         Tensor { data, shape: self.shape.clone() }
     }
 
@@ -178,70 +212,87 @@ impl Tensor {
         Tensor { data, shape: self.shape.clone() }
     }
 
-    // stacks a list of 1D tensors (each [d_model]) into one 2D tensor [count, d_model]
-    fn stack(vectors: &[&Tensor]) -> Tensor {
-        let d_model = vectors[0].data.len();
-        let mut data = Vec::with_capacity(vectors.len() * d_model);
-        for v in vectors {
-            assert_eq!(v.data.len(), d_model, "all vectors must have same length to stack");
-            data.extend_from_slice(&v.data);
+    // dropout: zero out each element with probability p, rescale survivors by 1/(1-p)
+    fn dropout(&self, p: f32, rng: &mut StdRng) -> Tensor {
+        if p <= 0.0 {
+            return Tensor { data: self.data.clone(), shape: self.shape.clone() };
         }
-        Tensor { data, shape: vec![vectors.len(), d_model] }
+        let scale = 1.0 / (1.0 - p);
+        let data: Vec<f32> = self.data.iter().map(|&x| {
+            if rng.random::<f32>() < p { 0.0 } else { x * scale }
+        }).collect();
+        Tensor { data, shape: self.shape.clone() }
+    }
+
+    // stacks a batch of sequences: each sequence is a Vec<&Tensor> of [d_model] vectors -> [batch, seq_len, d_model]
+    fn stack_batch(sequences: &[Vec<&Tensor>]) -> Tensor {
+        let batch = sequences.len();
+        let seq_len = sequences[0].len();
+        let d_model = sequences[0][0].data.len();
+
+        let mut data = Vec::with_capacity(batch * seq_len * d_model);
+        for seq in sequences {
+            assert_eq!(seq.len(), seq_len, "all sequences in a batch must have the same length");
+            for token_vec in seq {
+                assert_eq!(token_vec.data.len(), d_model, "all token vectors must have same length");
+                data.extend_from_slice(&token_vec.data);
+            }
+        }
+        Tensor { data, shape: vec![batch, seq_len, d_model] }
     }
 }
 
-
-
 fn read_shape() -> Vec<usize> {
     print!("Enter shape (space-separated, e.g. 2 4 8): ");
-    io::stdout().flush().unwrap(); // ensures prompt prints before input
-
+    io::stdout().flush().unwrap();
     let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read line");
-
-    input
-        .trim()                     // remove trailing newline
-        .split_whitespace()         // split on spaces
-        .map(|s| s.parse::<usize>().expect("Not a valid number"))
-        .collect()
+    io::stdin().read_line(&mut input).expect("Failed to read line");
+    input.trim().split_whitespace().map(|s| s.parse::<usize>().expect("Not a valid number")).collect()
 }
 
-fn read_text() -> String {
-    print!("Enter text to tokenize: ");
+fn read_text(prompt: &str) -> String {
+    print!("{prompt}");
     io::stdout().flush().unwrap();
-
     let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read line");
-
+    io::stdin().read_line(&mut input).expect("Failed to read line");
     input.trim().to_string()
 }
 
-use std::collections::HashMap;
+fn read_usize(prompt: &str) -> usize {
+    print!("{prompt}");
+    io::stdout().flush().unwrap();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).expect("Failed to read line");
+    input.trim().parse::<usize>().expect("Not a valid number")
+}
+
+fn read_f32(prompt: &str) -> f32 {
+    print!("{prompt}");
+    io::stdout().flush().unwrap();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).expect("Failed to read line");
+    input.trim().parse::<f32>().expect("Not a valid number")
+}
 
 struct Tokenizer {
-    vocab: HashMap<String, usize>, // word -> id
+    vocab: HashMap<String, usize>,
     next_id: usize,
 }
 
 impl Tokenizer {
     fn new() -> Self {
-        Tokenizer { vocab: HashMap::new(), next_id: 0 }
+        let mut vocab = HashMap::new();
+        vocab.insert("<PAD>".to_string(), 0);
+        Tokenizer { vocab, next_id: 1 } // real words start at id 1
     }
 
-    // splits text into words, assigns each unique word an id
     fn tokenize(&mut self, text: &str) -> Vec<usize> {
-        text.split_whitespace()
-            .map(|word| self.get_or_create_id(word))
-            .collect()
+        text.split_whitespace().map(|word| self.get_or_create_id(word)).collect()
     }
 
     fn get_or_create_id(&mut self, word: &str) -> usize {
         if let Some(&id) = self.vocab.get(word) {
-            id // already seen this word, reuse its id
+            id
         } else {
             let id = self.next_id;
             self.vocab.insert(word.to_string(), id);
@@ -252,28 +303,17 @@ impl Tokenizer {
 }
 
 struct Embedding {
-    table: Vec<Tensor>, // table[id] = vector for that token id
-    shape: Vec<usize>,
+    table: Vec<Tensor>,
 }
 
 impl Embedding {
-    fn new(vocab_size: usize, shape: Vec<usize>) -> Self {
-        let mut rng = StdRng::seed_from_u64(MANUAL_SEED); // any fixed number works, MANUAL_SEED is arbitrary
-
-        let per_token: usize = shape.iter().product(); // floats needed per token
-        let total: usize = vocab_size * per_token;      // floats needed for whole table
-
-        // one flat generation pass, same style as Tensor::random
+    fn new(vocab_size: usize, dim: usize) -> Self {
+        let mut rng = StdRng::seed_from_u64(MANUAL_SEED);
+        let total = vocab_size * dim;
         let flat_data: Vec<f32> = (0..total).map(|_| rng.random_range(-1.0..1.0)).collect();
-
-        // chunk the flat buffer into `vocab_size` pieces of `per_token` floats each,
-        // wrapping each piece into its own Tensor with the given shape
-        let table: Vec<Tensor> = flat_data
-            .chunks(per_token)
-            .map(|chunk| Tensor { data: chunk.to_vec(), shape: shape.clone() })
-            .collect();
-
-        Embedding { table, shape }
+        let table: Vec<Tensor> = flat_data.chunks(dim)
+        .map(|chunk: &[f32]| Tensor { data: chunk.to_vec(), shape: vec![dim] }).collect();
+        Embedding { table }
     }
 
     fn embed(&self, token_ids: &[usize]) -> Vec<&Tensor> {
@@ -282,16 +322,16 @@ impl Embedding {
 }
 
 struct AttentionWeights {
-    w_q: Tensor, // [d_model, d_k]
-    w_k: Tensor, // [d_model, d_k]
-    w_v: Tensor, // [d_model, d_v]
+    w_q: Tensor,
+    w_k: Tensor,
+    w_v: Tensor,
 }
 
 struct MlpWeights {
-    w1: Tensor, // [d_model, d_ff]
-    b1: Tensor, // [d_ff]
-    w2: Tensor, // [d_ff, d_model]
-    b2: Tensor, // [d_model]
+    w1: Tensor,
+    b1: Tensor,
+    w2: Tensor,
+    b2: Tensor,
 }
 
 struct TransformerLayer {
@@ -304,11 +344,9 @@ impl TransformerLayer {
         let mut rng = StdRng::seed_from_u64(seed);
 
         let make_matrix = |rng: &mut StdRng, rows: usize, cols: usize| -> Tensor {
-            let total = rows * cols;
-            let data: Vec<f32> = (0..total).map(|_| rng.random_range(-1.0..1.0)).collect();
+            let data: Vec<f32> = (0..rows * cols).map(|_| rng.random_range(-1.0..1.0)).collect();
             Tensor { data, shape: vec![rows, cols] }
         };
-
         let make_vector = |rng: &mut StdRng, len: usize| -> Tensor {
             let data: Vec<f32> = (0..len).map(|_| rng.random_range(-1.0..1.0)).collect();
             Tensor { data, shape: vec![len] }
@@ -319,7 +357,6 @@ impl TransformerLayer {
             w_k: make_matrix(&mut rng, d_model, d_k),
             w_v: make_matrix(&mut rng, d_model, d_v),
         };
-
         let mlp = MlpWeights {
             w1: make_matrix(&mut rng, d_model, d_ff),
             b1: make_vector(&mut rng, d_ff),
@@ -330,71 +367,82 @@ impl TransformerLayer {
         TransformerLayer { attention, mlp }
     }
 
-    // stub for now — will compute Q = X·W_Q, K = X·W_K, V = X·W_V, then scaled dot-product attention
-    fn attention(&self, x: &Tensor) -> Tensor {
-        let q = x.matmul(&self.attention.w_q);
-        let k = x.matmul(&self.attention.w_k);
-        let v = x.matmul(&self.attention.w_v);
+    // x: [batch, seq_len, d_model]
+    fn attention(&self, x: &Tensor, dropout_p: f32, rng: &mut StdRng) -> Tensor {
+        let q = x.matmul_weight(&self.attention.w_q);
+        let k = x.matmul_weight(&self.attention.w_k);
+        let v = x.matmul_weight(&self.attention.w_v);
 
         let d_k = self.attention.w_q.shape[1] as f32;
-        let scores = q.matmul(&k.transpose()).scalar_div(d_k.sqrt());
-        let weights = scores.softmax_rows();
+        let scores = q.matmul_batched(&k.transpose_last()).scalar_div(d_k.sqrt());
+        let weights = scores.softmax_rows().dropout(dropout_p, rng);
 
-        weights.matmul(&v)
+        weights.matmul_batched(&v)
     }
 
-    // stub for now — will compute a simple feed-forward: relu(X·W1)·W2
-    fn mlp(&self, x: &Tensor) -> Tensor {
-        let hidden = x.matmul(&self.mlp.w1).add_bias(&self.mlp.b1).gelu();
-        hidden.matmul(&self.mlp.w2).add_bias(&self.mlp.b2)
+    fn mlp(&self, x: &Tensor, dropout_p: f32, rng: &mut StdRng) -> Tensor {
+        let hidden = x.matmul_weight(&self.mlp.w1).add_bias(&self.mlp.b1).gelu().dropout(dropout_p, rng);
+        hidden.matmul_weight(&self.mlp.w2).add_bias(&self.mlp.b2)
     }
 
-    fn forward(&self, x: &Tensor) -> Tensor {
+    fn forward(&self, x: &Tensor, dropout_p: f32, rng: &mut StdRng) -> Tensor {
         let epsilon = 1e-5;
 
-        let attn_out = self.attention(x);
-        let mut x1 = x.add(&attn_out);
-        x1 = x1.layer_norm(epsilon);
+        let attn_out = self.attention(x, dropout_p, rng);
+        let x1 = x.add(&attn_out).layer_norm(epsilon);
 
-        let mlp_out = self.mlp(&x1);
-        let mut x2 = x1.add(&mlp_out);
-        x2 = x2.layer_norm(epsilon);
-
-        x2 // returned — no semicolon
+        let mlp_out = self.mlp(&x1, dropout_p, rng);
+        x1.add(&mlp_out).layer_norm(epsilon)
     }
-}
-
-fn read_usize(prompt: &str) -> usize {
-    print!("{prompt}");
-    io::stdout().flush().unwrap();
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).expect("Failed to read line");
-    input.trim().parse::<usize>().expect("Not a valid number")
 }
 
 fn main() {
+    let batch_size = read_usize("Enter batch size (number of sentences): ");
+
     let mut tokenizer = Tokenizer::new();
-    let text = read_text();
-    let token_ids = tokenizer.tokenize(&text);
+    let mut all_token_ids: Vec<Vec<usize>> = Vec::new();
+
+    for i in 0..batch_size {
+        let text = read_text(&format!("Enter text for sequence {}: ", i + 1));
+        let ids = tokenizer.tokenize(&text);
+        all_token_ids.push(ids);
+    }
+
+    let seq_len = all_token_ids.iter().map(|ids| ids.len()).max().unwrap();
+
+    for ids in all_token_ids.iter_mut() {
+        while ids.len() < seq_len {
+            ids.push(0); // pad with <PAD> token id
+        }
+    }
 
     let shape = read_shape();
     let d_model: usize = shape.iter().product();
 
-    let embedding = Embedding::new(tokenizer.next_id, shape);
-    let vectors = embedding.embed(&token_ids);
-    let x = Tensor::stack(&vectors); // [seq_len, d_model]
+    let embedding = Embedding::new(tokenizer.next_id, d_model);
+
+    let sequences: Vec<Vec<&Tensor>> = all_token_ids.iter()
+        .map(|ids| embedding.embed(ids))
+        .collect();
+    let x = Tensor::stack_batch(&sequences); // [batch, seq_len, d_model]
 
     let num_heads = read_usize("Enter number of attention heads: ");
-    assert_eq!(d_model % num_heads, 0, "d_model must be divisible by num_heads");
+    let seq_len = all_token_ids[0].len();
+    for ids in &all_token_ids {
+        assert_eq!(ids.len(), seq_len, "...");
+    }
     let d_k = d_model / num_heads;
-    let d_v = d_model; // must match d_model for residual connection to work
+    let d_v = d_model;
     let d_ff = read_usize("Enter feed-forward hidden size (d_ff): ");
     let num_layers = read_usize("Enter number of layers: ");
+    let dropout_p = read_f32("Enter dropout probability (e.g. 0.1, or 0 to disable): ");
+
+    let mut rng = StdRng::seed_from_u64(MANUAL_SEED + 1000);
 
     let mut output = x;
     for i in 0..num_layers {
         let layer = TransformerLayer::new(d_model, d_k, d_v, d_ff, MANUAL_SEED + i as u64);
-        output = layer.forward(&output);
+        output = layer.forward(&output, dropout_p, &mut rng);
     }
 
     println!("{}", output.to_nested_string());

@@ -1,0 +1,50 @@
+Enter batch size (number of sentences): 37
+
+Enter text for sequence 1: The Library on the Hill
+High on a blustery cliff overlooking the ocean stood an ancient stone library that held only one 
+copy of every book ever forgotten by the world. The librarian, an old gentleman named Arthur, spent 
+his days organizing shelves that stretched up toward vaulted wooden ceilings.
+
+One evening, a high school boy named Leo snuck into the library to take shelter from a sudden downpour. 
+Curious, Leo wandered through the aisles until he pulled a small, dusty leather notebook off a shelf.
+
+There was no title on the cover. Inside, every page was filled with hand-drawn sketches of strange 
+inventions, starry skies, and handwritten thoughts in messy blue ink.
+
+"Ah, you found Master Daniel's journal," Arthur's calm voice echoed from down the aisle.
+
+Leo startled, nearly dropping the book. "Sorry! I was just getting out of the rain. Who was Daniel?"
+
+"An inventor from eighty years ago," Arthur said, stepping closer with a warm lantern. "He spent his 
+entire life designing flying machines, water purifiers, and automated plows. But he never published his 
+work, and when he passed away, his attic was cleared out."
+
+Leo flipped to a page with a detailed drawing of a solar-powered water collector. "These ideas are 
+brilliant! Why did nobody ever build them?"
+
+"Because Daniel was afraid," Arthur said gently. "He was terrified that people would laugh at his ideas, 
+so he kept them all in that single notebook."
+
+Leo looked down at the yellowed pages, suddenly feeling a knot in his stomach. He remembered the 
+notebooks stacked under his own bed at home, full of stories and drawings he had never shown a single 
+soul out of fear of being judged.
+
+"It seems sad," Leo whispered. "All these great ideas, sitting in the dark forever."
+
+"They don't have to stay in the dark," Arthur said, handing Leo a pencil and a blank notepad. "The 
+library collects what the world forgets, but anyone who walks in here is free to carry a piece of it 
+back out."
+
+That night, as the rain tapped against the high glass windows, Leo sat at a heavy wooden table and began 
+copying the diagrams, ready to bring them into the light.
+
+
+Enter shape (space-separated, e.g. 2 4 8): 16 32
+
+Enter number of attention heads: 8
+
+Enter feed-forward hidden size (d_ff): 1024
+
+Enter number of layers: 2
+
+Enter dropout probability (e.g. 0.1, or 0 to disable): 0.15
