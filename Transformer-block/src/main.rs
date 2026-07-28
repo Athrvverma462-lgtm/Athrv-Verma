@@ -31,6 +31,120 @@ impl Tensor {
             .collect();
         format!("[{}]", parts.join(",\n"))
     }
+
+     // 2D indexing helper: converts (row, col) into the flat buffer index
+    fn get(&self, row: usize, col: usize) -> f32 {
+        let cols = self.shape[1];
+        self.data[row * cols + col]
+    }
+
+    fn matmul(&self, other: &Tensor) -> Tensor {
+        // self: [rows_a, cols_a], other: [rows_b, cols_b], require cols_a == rows_b
+        let rows_a = self.shape[0];
+        let cols_a = self.shape[1];
+        let rows_b = other.shape[0];
+        let cols_b = other.shape[1];
+
+        assert_eq!(cols_a, rows_b, "matmul shape mismatch: {:?} vs {:?}", self.shape, other.shape);
+
+        let mut data = vec![0.0; rows_a * cols_b];
+
+        for i in 0..rows_a {
+            for j in 0..cols_b {
+                let mut sum = 0.0;
+                for k in 0..cols_a {
+                    sum += self.get(i, k) * other.get(k, j);
+                }
+                data[i * cols_b + j] = sum;
+            }
+        }
+
+        Tensor { data, shape: vec![rows_a, cols_b] }
+    }
+
+    fn transpose(&self) -> Tensor {
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        let mut data = vec![0.0; rows * cols];
+
+        for i in 0..rows {
+            for j in 0..cols {
+                // swap positions: element at (i,j) goes to (j,i) in the new layout
+                data[j * rows + i] = self.get(i, j);
+            }
+        }
+
+        Tensor { data, shape: vec![cols, rows] } // shape dimensions swapped too
+    }
+
+    fn scalar_div(&self, scalar: f32) -> Tensor {
+        let data: Vec<f32> = self.data.iter().map(|x| x / scalar).collect();
+        Tensor { data, shape: self.shape.clone() }
+    }
+
+    fn softmax_rows(&self) -> Tensor {
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        let mut data = vec![0.0; rows * cols];
+
+        for i in 0..rows {
+            // 1. find the max value in this row (for numerical stability)
+            let mut max_val = f32::NEG_INFINITY;
+            for j in 0..cols {
+                let v = self.get(i, j);
+                if v > max_val {
+                    max_val = v;
+                }
+            }
+
+            // 2. exponentiate each element (shifted by max_val to avoid overflow)
+            let mut row_exp = vec![0.0; cols];
+            let mut sum = 0.0;
+            for j in 0..cols {
+                let e = (self.get(i, j) - max_val).exp();
+                row_exp[j] = e;
+                sum += e;
+            }
+
+            // 3. divide each exponentiated value by the row's sum
+            for j in 0..cols {
+                data[i * cols + j] = row_exp[j] / sum;
+            }
+        }
+
+        Tensor { data, shape: vec![rows, cols] }
+    }
+
+    fn layer_norm(&self, epsilon: f32) -> Tensor {
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        let mut data = vec![0.0; rows * cols];
+
+        for i in 0..rows {
+            // 1. compute mean of this row
+            let mut sum = 0.0;
+            for j in 0..cols {
+                sum += self.get(i, j);
+            }
+            let mean = sum / cols as f32;
+
+            // 2. compute variance of this row
+            let mut var_sum = 0.0;
+            for j in 0..cols {
+                let diff = self.get(i, j) - mean;
+                var_sum += diff * diff;
+            }
+            let variance = var_sum / cols as f32;
+
+            // 3. normalize: (x - mean) / sqrt(variance + epsilon)
+            let denom = (variance + epsilon).sqrt();
+            for j in 0..cols {
+                data[i * cols + j] = (self.get(i, j) - mean) / denom;
+            }
+        }
+
+        Tensor { data, shape: vec![rows, cols] }
+    }
 }
 
 fn read_shape() -> Vec<usize> {
@@ -119,6 +233,80 @@ impl Embedding {
 
     fn embed(&self, token_ids: &[usize]) -> Vec<&Tensor> {
         token_ids.iter().map(|&id| &self.table[id]).collect()
+    }
+}
+
+struct AttentionWeights {
+    w_q: Tensor, // [d_model, d_k]
+    w_k: Tensor, // [d_model, d_k]
+    w_v: Tensor, // [d_model, d_v]
+}
+
+struct MlpWeights {
+    w1: Tensor, // [d_model, d_ff]
+    w2: Tensor, // [d_ff, d_model]
+}
+
+struct TransformerLayer {
+    attention: AttentionWeights,
+    mlp: MlpWeights,
+}
+
+impl TransformerLayer {
+    // one seed per layer so layers don't accidentally share identical weights
+    fn new(d_model: usize, d_k: usize, d_v: usize, d_ff: usize, seed: u64) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        let make_matrix = |rng: &mut StdRng, rows: usize, cols: usize| -> Tensor {
+            let total = rows * cols;
+            let data: Vec<f32> = (0..total).map(|_| rng.random_range(-1.0..1.0)).collect();
+            Tensor { data, shape: vec![rows, cols] }
+        };
+
+        let attention = AttentionWeights {
+            w_q: make_matrix(&mut rng, d_model, d_k),
+            w_k: make_matrix(&mut rng, d_model, d_k),
+            w_v: make_matrix(&mut rng, d_model, d_v),
+        };
+
+        let mlp = MlpWeights {
+            w1: make_matrix(&mut rng, d_model, d_ff),
+            w2: make_matrix(&mut rng, d_ff, d_model),
+        };
+
+        TransformerLayer { attention, mlp }
+    }
+
+    // stub for now — will compute Q = X·W_Q, K = X·W_K, V = X·W_V, then scaled dot-product attention
+    fn attention(&self, x: &Tensor) -> Tensor {
+        let q = x.matmul(&self.attention.w_q);
+        let k = x.matmul(&self.attention.w_k);
+        let v = x.matmul(&self.attention.w_v);
+
+        let d_k = self.attention.w_q.shape[1] as f32;
+        let scores = q.matmul(&k.transpose()).scalar_div(d_k.sqrt());
+        let weights = scores.softmax_rows();
+
+        weights.matmul(&v)
+    }
+
+    // stub for now — will compute a simple feed-forward: relu(X·W1)·W2
+    fn mlp(&self, x: &Tensor) -> Tensor {
+        todo!("matmul with w1, activation, matmul with w2")
+    }
+
+    fn forward(&self, x: &Tensor) -> Tensor {
+        let epsilon = 1e-5;
+
+        let attn_out = self.attention(x);
+        let mut x1 = x.add(&attn_out);
+        x1 = x1.layer_norm(epsilon);
+
+        let mlp_out = self.mlp(&x1);
+        let mut x2 = x1.add(&mlp_out);
+        x2 = x2.layer_norm(epsilon);
+
+        x2 // returned — no semicolon
     }
 }
 
