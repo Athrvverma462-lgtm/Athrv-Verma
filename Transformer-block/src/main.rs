@@ -145,7 +145,52 @@ impl Tensor {
 
         Tensor { data, shape: vec![rows, cols] }
     }
+
+    // adds a 1D bias vector to every row of a 2D tensor
+    fn add_bias(&self, bias: &Tensor) -> Tensor {
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        assert_eq!(cols, bias.data.len(), "bias length must match column count");
+
+        let mut data = vec![0.0; rows * cols];
+        for i in 0..rows {
+            for j in 0..cols {
+                data[i * cols + j] = self.get(i, j) + bias.data[j];
+            }
+        }
+
+        Tensor { data, shape: vec![rows, cols] }
+    }
+
+    fn gelu(&self) -> Tensor {
+        let data: Vec<f32> = self.data.iter().map(|&x| {
+            // tanh approximation of GELU (standard, matches PyTorch's default closely)
+            0.5 * x * (1.0 + ((2.0 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x.powi(3))).tanh())
+        }).collect();
+
+        Tensor { data, shape: self.shape.clone() }
+    }
+
+    // element-wise add, requires identical shapes
+    fn add(&self, other: &Tensor) -> Tensor {
+        assert_eq!(self.shape, other.shape, "add shape mismatch: {:?} vs {:?}", self.shape, other.shape);
+        let data: Vec<f32> = self.data.iter().zip(other.data.iter()).map(|(a, b)| a + b).collect();
+        Tensor { data, shape: self.shape.clone() }
+    }
+
+    // stacks a list of 1D tensors (each [d_model]) into one 2D tensor [count, d_model]
+    fn stack(vectors: &[&Tensor]) -> Tensor {
+        let d_model = vectors[0].data.len();
+        let mut data = Vec::with_capacity(vectors.len() * d_model);
+        for v in vectors {
+            assert_eq!(v.data.len(), d_model, "all vectors must have same length to stack");
+            data.extend_from_slice(&v.data);
+        }
+        Tensor { data, shape: vec![vectors.len(), d_model] }
+    }
 }
+
+
 
 fn read_shape() -> Vec<usize> {
     print!("Enter shape (space-separated, e.g. 2 4 8): ");
@@ -244,7 +289,9 @@ struct AttentionWeights {
 
 struct MlpWeights {
     w1: Tensor, // [d_model, d_ff]
+    b1: Tensor, // [d_ff]
     w2: Tensor, // [d_ff, d_model]
+    b2: Tensor, // [d_model]
 }
 
 struct TransformerLayer {
@@ -253,7 +300,6 @@ struct TransformerLayer {
 }
 
 impl TransformerLayer {
-    // one seed per layer so layers don't accidentally share identical weights
     fn new(d_model: usize, d_k: usize, d_v: usize, d_ff: usize, seed: u64) -> Self {
         let mut rng = StdRng::seed_from_u64(seed);
 
@@ -261,6 +307,11 @@ impl TransformerLayer {
             let total = rows * cols;
             let data: Vec<f32> = (0..total).map(|_| rng.random_range(-1.0..1.0)).collect();
             Tensor { data, shape: vec![rows, cols] }
+        };
+
+        let make_vector = |rng: &mut StdRng, len: usize| -> Tensor {
+            let data: Vec<f32> = (0..len).map(|_| rng.random_range(-1.0..1.0)).collect();
+            Tensor { data, shape: vec![len] }
         };
 
         let attention = AttentionWeights {
@@ -271,7 +322,9 @@ impl TransformerLayer {
 
         let mlp = MlpWeights {
             w1: make_matrix(&mut rng, d_model, d_ff),
+            b1: make_vector(&mut rng, d_ff),
             w2: make_matrix(&mut rng, d_ff, d_model),
+            b2: make_vector(&mut rng, d_model),
         };
 
         TransformerLayer { attention, mlp }
@@ -292,7 +345,8 @@ impl TransformerLayer {
 
     // stub for now — will compute a simple feed-forward: relu(X·W1)·W2
     fn mlp(&self, x: &Tensor) -> Tensor {
-        todo!("matmul with w1, activation, matmul with w2")
+        let hidden = x.matmul(&self.mlp.w1).add_bias(&self.mlp.b1).gelu();
+        hidden.matmul(&self.mlp.w2).add_bias(&self.mlp.b2)
     }
 
     fn forward(&self, x: &Tensor) -> Tensor {
@@ -310,20 +364,38 @@ impl TransformerLayer {
     }
 }
 
+fn read_usize(prompt: &str) -> usize {
+    print!("{prompt}");
+    io::stdout().flush().unwrap();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).expect("Failed to read line");
+    input.trim().parse::<usize>().expect("Not a valid number")
+}
+
 fn main() {
     let mut tokenizer = Tokenizer::new();
     let text = read_text();
     let token_ids = tokenizer.tokenize(&text);
 
-    println!("Token IDs: {:?}", token_ids);
-    println!("Vocab: {:?}", tokenizer.vocab);
-
     let shape = read_shape();
-    println!("{:?}", &shape);
+    let d_model: usize = shape.iter().product();
+
     let embedding = Embedding::new(tokenizer.next_id, shape);
     let vectors = embedding.embed(&token_ids);
+    let x = Tensor::stack(&vectors); // [seq_len, d_model]
 
-    for (word_id, vec) in token_ids.iter().zip(vectors.iter()) {
-    println!("id {} -> {}", word_id, vec.to_nested_string());
+    let num_heads = read_usize("Enter number of attention heads: ");
+    assert_eq!(d_model % num_heads, 0, "d_model must be divisible by num_heads");
+    let d_k = d_model / num_heads;
+    let d_v = d_model; // must match d_model for residual connection to work
+    let d_ff = read_usize("Enter feed-forward hidden size (d_ff): ");
+    let num_layers = read_usize("Enter number of layers: ");
+
+    let mut output = x;
+    for i in 0..num_layers {
+        let layer = TransformerLayer::new(d_model, d_k, d_v, d_ff, MANUAL_SEED + i as u64);
+        output = layer.forward(&output);
     }
+
+    println!("{}", output.to_nested_string());
 }
